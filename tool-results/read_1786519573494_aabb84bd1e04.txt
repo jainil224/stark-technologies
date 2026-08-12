@@ -1,0 +1,669 @@
+     1→"use client";
+     2→
+     3→import { useCallback, useRef, useState } from "react";
+     4→import { useForm, useWatch } from "react-hook-form";
+     5→import { zodResolver } from "@hookform/resolvers/zod";
+     6→import { z } from "zod";
+     7→import { useMutation, useQueryClient } from "@tanstack/react-query";
+     8→import {
+     9→  FileText,
+    10→  Mic,
+    11→  Type,
+    12→  Upload,
+    13→  X,
+    14→  MapPin,
+    15→  Loader2,
+    16→  ArrowRight,
+    17→  CheckCircle2,
+    18→  Paperclip,
+    19→  Sparkles,
+    20→} from "lucide-react";
+    21→import { toast } from "sonner";
+    22→import { motion, AnimatePresence } from "framer-motion";
+    23→
+    24→import { Button } from "@/components/ui/button";
+    25→import { Input } from "@/components/ui/input";
+    26→import { Label } from "@/components/ui/label";
+    27→import { Textarea } from "@/components/ui/textarea";
+    28→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+    29→import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+    30→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+    31→import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+    32→import { Progress } from "@/components/ui/progress";
+    33→
+    34→import { useTranslations } from "@/lib/i18n";
+    35→import { useNav } from "@/lib/nav";
+    36→import { complaintsApi } from "@/lib/api";
+    37→import { formatBytes } from "@/lib/format";
+    38→import { cn } from "@/lib/utils";
+    39→import { VoiceRecorder } from "./voice-recorder";
+    40→
+    41→// ---------------------------------------------------------------------------
+    42→// Department options.
+    43→// Hardcoded locally as a const (per task spec). In production these would
+    44→// come from a /departments endpoint.
+    45→// ---------------------------------------------------------------------------
+    46→const DEPARTMENTS: { id: string; labelKey: string; label: string }[] = [
+    47→  { id: "dept_pwk", labelKey: "dept.pwk", label: "Public Works (Roads, Bridges, Footpaths)" },
+    48→  { id: "dept_water", labelKey: "dept.water", label: "Water Supply & Sanitation" },
+    49→  { id: "dept_elec", labelKey: "dept.elec", label: "Electricity & Street Lighting" },
+    50→  { id: "dept_health", labelKey: "dept.health", label: "Health & Family Welfare" },
+    51→  { id: "dept_edu", labelKey: "dept.edu", label: "Education & Schools" },
+    52→  { id: "dept_transport", labelKey: "dept.transport", label: "Transport & Traffic" },
+    53→];
+    54→
+    55→const ALLOWED_MIME = [
+    56→  "image/jpeg",
+    57→  "image/png",
+    58→  "image/webp",
+    59→  "image/heic",
+    60→  "application/pdf",
+    61→];
+    62→const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+    63→
+    64→// ---------------------------------------------------------------------------
+    65→// Form schema + types
+    66→// ---------------------------------------------------------------------------
+    67→const complaintSchema = z.object({
+    68→  title: z.string().min(5, "Title must be at least 5 characters"),
+    69→  description: z.string().min(20, "Description must be at least 20 characters"),
+    70→  department_id: z.string(),
+    71→  is_voice: z.boolean(),
+    72→  transcript: z.string().optional(),
+    73→});
+    74→type ComplaintValues = z.infer<typeof complaintSchema>;
+    75→
+    76→type AttachmentDraft = {
+    77→  _uid: string;
+    78→  filename: string;
+    79→  mime_type: string;
+    80→  size_bytes: number;
+    81→  progress: number; // simulated upload progress 0-100
+    82→};
+    83→
+    84→type LocationState =
+    85→  | { kind: "idle" }
+    86→  | { kind: "capturing" }
+    87→  | { kind: "captured"; lat: number; lng: number; address: string }
+    88→  | { kind: "denied" };
+    89→
+    90→type VoiceStage = "prompt" | "review" | "confirmed";
+    91→
+    92→// ---------------------------------------------------------------------------
+    93→// ComplaintForm — default export
+    94→// ---------------------------------------------------------------------------
+    95→export default function ComplaintForm() {
+    96→  const { t } = useTranslations();
+    97→  const navigate = useNav((s) => s.navigate);
+    98→  const queryClient = useQueryClient();
+    99→
+   100→  const {
+   101→    register,
+   102→    handleSubmit,
+   103→    setValue,
+   104→    control,
+   105→    trigger,
+   106→    formState: { errors },
+   107→  } = useForm<ComplaintValues>({
+   108→    resolver: zodResolver(complaintSchema),
+   109→    defaultValues: {
+   110→      title: "",
+   111→      description: "",
+   112→      department_id: "auto",
+   113→      is_voice: false,
+   114→      transcript: "",
+   115→    },
+   116→  });
+   117→
+   118→  // useWatch (rather than useForm's `watch`) plays nicely with React Compiler
+   119→  // memoization — see https://react-hook-form.com/docs/useWatch
+   120→  const isVoice = useWatch({ control, name: "is_voice" });
+   121→  const description = useWatch({ control, name: "description" });
+   122→
+   123→  // Local (non-RHF) state for attachments, location, voice review flow.
+   124→  const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
+   125→  const [location, setLocation] = useState<LocationState>({ kind: "idle" });
+   126→  const [voiceStage, setVoiceStage] = useState<VoiceStage>("prompt");
+   127→  const [reviewTranscript, setReviewTranscript] = useState("");
+   128→  const [serverError, setServerError] = useState<string | null>(null);
+   129→  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+   130→
+   131→  const fileInputRef = useRef<HTMLInputElement | null>(null);
+   132→  const dragDepthRef = useRef(0);
+   133→  const [isDragging, setIsDragging] = useState(false);
+   134→
+   135→  // --- Mutation --------------------------------------------------------------
+   136→  const mutation = useMutation({
+   137→    mutationFn: async (values: ComplaintValues) => {
+   138→      const { data, error } = await complaintsApi.create({
+   139→        title: values.title,
+   140→        description: values.description,
+   141→        department_id: values.department_id === "auto" ? undefined : values.department_id,
+   142→        is_voice: values.is_voice,
+   143→        transcript: values.is_voice ? values.transcript : undefined,
+   144→        attachments: attachments.map(({ filename, mime_type, size_bytes }) => ({
+   145→          filename,
+   146→          mime_type,
+   147→          size_bytes,
+   148→        })),
+   149→        location_lat: location.kind === "captured" ? location.lat : undefined,
+   150→        location_lng: location.kind === "captured" ? location.lng : undefined,
+   151→        location_address: location.kind === "captured" ? location.address : undefined,
+   152→      });
+   153→      if (error || !data) throw error ?? new Error("Submission failed");
+   154→      return data;
+   155→    },
+   156→    onSuccess: (data) => {
+   157→      queryClient.invalidateQueries({ queryKey: ["complaints"] });
+   158→      toast.success(t("toast.complaintSubmitted"));
+   159→      navigate("complaint_submitted", { submittedId: data.id });
+   160→    },
+   161→    onError: (err: unknown) => {
+   162→      const e = err as { message?: string; field_errors?: Record<string, string> } | null;
+   163→      setServerError(e?.message ?? t("errors.generic"));
+   164→      setFieldErrors(e?.field_errors ?? {});
+   165→    },
+   166→  });
+   167→
+   168→  // --- Voice flow ------------------------------------------------------------
+   169→  const onTranscript = useCallback(
+   170→    (text: string) => {
+   171→      setReviewTranscript(text);
+   172→      setValue("transcript", text, { shouldValidate: false });
+   173→      setVoiceStage("review");
+   174→    },
+   175→    [setValue]
+   176→  );
+   177→
+   178→  const resetVoice = useCallback(() => {
+   179→    setReviewTranscript("");
+   180→    setValue("transcript", "", { shouldValidate: false });
+   181→    setVoiceStage("prompt");
+   182→  }, [setValue]);
+   183→
+   184→  const useTranscript = useCallback(async () => {
+   185→    setValue("transcript", reviewTranscript, { shouldValidate: false });
+   186→    setValue("description", reviewTranscript, { shouldValidate: true });
+   187→    setVoiceStage("confirmed");
+   188→    await trigger("description");
+   189→  }, [reviewTranscript, setValue, trigger]);
+   190→
+   191→  const switchMode = (mode: "text" | "voice") => {
+   192→    setServerError(null);
+   193→    setFieldErrors({});
+   194→    if (mode === "text") {
+   195→      setValue("is_voice", false, { shouldValidate: false });
+   196→      resetVoice();
+   197→    } else {
+   198→      setValue("is_voice", true, { shouldValidate: false });
+   199→    }
+   200→  };
+   201→
+   202→  // --- Attachments -----------------------------------------------------------
+   203→  const addFiles = useCallback(
+   204→    (fileList: FileList | File[]) => {
+   205→      const files = Array.from(fileList);
+   206→      for (const file of files) {
+   207→        if (!ALLOWED_MIME.includes(file.type)) {
+   208→          toast.error(t("toast.attachmentBadType", { name: file.name }));
+   209→          continue;
+   210→        }
+   211→        if (file.size > MAX_FILE_BYTES) {
+   212→          toast.error(t("toast.attachmentTooBig", { name: file.name }));
+   213→          continue;
+   214→        }
+   215→        // Track this draft by a unique client id so the simulated progress
+   216→        // timer updates the right row even if duplicates are added.
+   217→        const uid = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+   218→        const draft: AttachmentDraft = {
+   219→          _uid: uid,
+   220→          filename: file.name,
+   221→          mime_type: file.type,
+   222→          size_bytes: file.size,
+   223→          progress: 0,
+   224→        };
+   225→        setAttachments((cur) => [...cur, draft]);
+   226→        let pct = 0;
+   227→        const interval = setInterval(() => {
+   228→          pct = Math.min(100, pct + 18 + Math.random() * 12);
+   229→          setAttachments((cur) =>
+   230→            cur.map((a) => (a._uid === uid ? { ...a, progress: pct } : a))
+   231→          );
+   232→          if (pct >= 100) clearInterval(interval);
+   233→        }, 220);
+   234→      }
+   235→    },
+   236→    [t]
+   237→  );
+   238→
+   239→  const removeAttachment = (index: number) => {
+   240→    setAttachments((cur) => cur.filter((_, i) => i !== index));
+   241→  };
+   242→
+   243→  const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+   244→    if (e.target.files?.length) addFiles(e.target.files);
+   245→    // Reset so picking the same file twice still fires a change event.
+   246→    e.target.value = "";
+   247→  };
+   248→
+   249→  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+   250→    e.preventDefault();
+   251→    e.stopPropagation();
+   252→    dragDepthRef.current = 0;
+   253→    setIsDragging(false);
+   254→    if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+   255→  };
+   256→  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+   257→    e.preventDefault();
+   258→    e.stopPropagation();
+   259→  };
+   260→  const onDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+   261→    e.preventDefault();
+   262→    e.stopPropagation();
+   263→    dragDepthRef.current += 1;
+   264→    setIsDragging(true);
+   265→  };
+   266→  const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+   267→    e.preventDefault();
+   268→    e.stopPropagation();
+   269→    dragDepthRef.current -= 1;
+   270→    if (dragDepthRef.current <= 0) setIsDragging(false);
+   271→  };
+   272→
+   273→  // --- Location --------------------------------------------------------------
+   274→  const captureLocation = () => {
+   275→    if (typeof navigator === "undefined" || !navigator.geolocation) {
+   276→      toast.error(t("complaint.locationDenied"));
+   277→      return;
+   278→    }
+   279→    setLocation({ kind: "capturing" });
+   280→    navigator.geolocation.getCurrentPosition(
+   281→      (pos) => {
+   282→        const lat = Math.round(pos.coords.latitude * 100) / 100;
+   283→        const lng = Math.round(pos.coords.longitude * 100) / 100;
+   284→        setLocation({
+   285→          kind: "captured",
+   286→          lat,
+   287→          lng,
+   288→          address: `Lat ${lat}, Lng ${lng}`,
+   289→        });
+   290→      },
+   291→      () => {
+   292→        setLocation({ kind: "denied" });
+   293→        toast.error(t("complaint.locationDenied"));
+   294→      },
+   295→      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+   296→    );
+   297→  };
+   298→
+   299→  // --- Submit gating ---------------------------------------------------------
+   300→  const voiceBlocking =
+   301→    isVoice && (voiceStage === "prompt" || voiceStage === "review");
+   302→  const submitDisabled = mutation.isPending || voiceBlocking;
+   303→
+   304→  async function onSubmit(values: ComplaintValues) {
+   305→    setServerError(null);
+   306→    setFieldErrors({});
+   307→    // Double-check voice gating (should be redundant with disabled prop).
+   308→    if (voiceBlocking) return;
+   309→    mutation.mutate(values);
+   310→  }
+   311→
+   312→  return (
+   313→    <div className="mx-auto w-full max-w-2xl">
+   314→      <Card className="border-border/70 shadow-lg shadow-primary/5">
+   315→        <CardHeader className="space-y-1.5">
+   316→          <div className="flex items-center gap-2">
+   317→            <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+   318→              <Sparkles className="size-4" aria-hidden />
+   319→            </span>
+   320→            <CardTitle className="text-xl">{t("complaint.newTitle")}</CardTitle>
+   321→          </div>
+   322→          <CardDescription>{t("complaint.newSubtitle")}</CardDescription>
+   323→        </CardHeader>
+   324→        <CardContent>
+   325→          <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" noValidate>
+   326→            {serverError ? (
+   327→              <Alert variant="destructive">
+   328→                <AlertTitle>{t("errors.somethingWentWrong")}</AlertTitle>
+   329→                <AlertDescription>{serverError}</AlertDescription>
+   330→              </Alert>
+   331→            ) : null}
+   332→
+   333→            {/* Input mode toggle ------------------------------------------------- */}
+   334→            <div className="space-y-2">
+   335→              <Label>{t("complaint.inputModeLabel")}</Label>
+   336→              <ToggleGroup
+   337→                type="single"
+   338→                value={isVoice ? "voice" : "text"}
+   339→                onValueChange={(v) => {
+   340→                  if (v === "voice") switchMode("voice");
+   341→                  else if (v === "text") switchMode("text");
+   342→                }}
+   343→                variant="outline"
+   344→                className="grid w-full grid-cols-2"
+   345→              >
+   346→                <ToggleGroupItem value="text" className="gap-1.5 py-2.5" aria-label={t("complaint.textMode")}>
+   347→                  <Type className="size-4" aria-hidden />
+   348→                  {t("complaint.textMode")}
+   349→                </ToggleGroupItem>
+   350→                <ToggleGroupItem value="voice" className="gap-1.5 py-2.5" aria-label={t("complaint.voiceMode")}>
+   351→                  <Mic className="size-4" aria-hidden />
+   352→                  {t("complaint.voiceMode")}
+   353→                </ToggleGroupItem>
+   354→              </ToggleGroup>
+   355→            </div>
+   356→
+   357→            {/* Voice recorder OR transcript review ---------------------------------- */}
+   358→            <AnimatePresence mode="wait" initial={false}>
+   359→              {isVoice ? (
+   360→                <motion.div
+   361→                  key="voice-block"
+   362→                  initial={{ opacity: 0, height: 0 }}
+   363→                  animate={{ opacity: 1, height: "auto" }}
+   364→                  exit={{ opacity: 0, height: 0 }}
+   365→                  transition={{ duration: 0.22, ease: "easeOut" }}
+   366→                  className="overflow-hidden"
+   367→                >
+   368→                  {voiceStage === "prompt" ? (
+   369→                    <div className="space-y-2">
+   370→                      <VoiceRecorder onTranscript={onTranscript} onReset={resetVoice} />
+   371→                    </div>
+   372→                  ) : voiceStage === "review" ? (
+   373→                    <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4">
+   374→                      <div className="flex items-start gap-2">
+   375→                        <Mic className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+   376→                        <div>
+   377→                          <p className="text-sm font-medium text-foreground">{t("complaint.voiceReview")}</p>
+   378→                          <p className="mt-1 text-xs text-muted-foreground">{t("complaint.voiceReviewHint")}</p>
+   379→                        </div>
+   380→                      </div>
+   381→                      <Textarea
+   382→                        value={reviewTranscript}
+   383→                        onChange={(e) => setReviewTranscript(e.target.value)}
+   384→                        rows={5}
+   385→                        aria-label={t("complaint.voiceReview")}
+   386→                        className="bg-background"
+   387→                      />
+   388→                      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+   389→                        <Button
+   390→                          type="button"
+   391→                          variant="outline"
+   392→                          onClick={resetVoice}
+   393→                          className="gap-1.5"
+   394→                        >
+   395→                          {t("complaint.voiceRetake")}
+   396→                        </Button>
+   397→                        <Button
+   398→                          type="button"
+   399→                          onClick={useTranscript}
+   400→                          className="gap-1.5"
+   401→                          disabled={!reviewTranscript.trim()}
+   402→                        >
+   403→                          <CheckCircle2 className="size-4" aria-hidden />
+   404→                          {t("complaint.voiceUse")}
+   405→                        </Button>
+   406→                      </div>
+   407→                    </div>
+   408→                  ) : (
+   409→                    <div className="flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30">
+   410→                      <div className="flex items-start gap-2">
+   411→                        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden />
+   412→                        <div>
+   413→                          <p className="text-sm font-medium text-foreground">{t("complaint.voiceUse")}</p>
+   414→                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+   415→                            {reviewTranscript}
+   416→                          </p>
+   417→                        </div>
+   418→                      </div>
+   419→                      <Button
+   420→                        type="button"
+   421→                        variant="ghost"
+   422→                        size="sm"
+   423→                        onClick={resetVoice}
+   424→                        className="shrink-0 text-muted-foreground"
+   425→                      >
+   426→                        {t("complaint.voiceRetake")}
+   427→                      </Button>
+   428→                    </div>
+   429→                  )}
+   430→                </motion.div>
+   431→              ) : null}
+   432→            </AnimatePresence>
+   433→
+   434→            {/* Title -------------------------------------------------------------- */}
+   435→            <div className="space-y-1.5">
+   436→              <Label htmlFor="title">
+   437→                {t("complaint.titleLabel")}{" "}
+   438→                <span className="text-xs font-normal text-muted-foreground">({t("common.required")})</span>
+   439→              </Label>
+   440→              <Input
+   441→                id="title"
+   442→                placeholder={t("complaint.titlePlaceholder")}
+   443→                className={cn((errors.title || fieldErrors.title) && "border-destructive")}
+   444→                {...register("title")}
+   445→              />
+   446→              {errors.title ? (
+   447→                <p className="text-xs text-destructive">{errors.title.message}</p>
+   448→              ) : null}
+   449→              {fieldErrors.title ? (
+   450→                <p className="text-xs text-destructive">{fieldErrors.title}</p>
+   451→              ) : null}
+   452→            </div>
+   453→
+   454→            {/* Description (text mode OR voice-confirmed summary) -------------------- */}
+   455→            {/* In voice mode, hide the description field while recording/reviewing
+   456→                the transcript — the transcript review block above replaces it.
+   457→                Once the user clicks "Use this transcript", we surface the
+   458→                populated description so they can fine-tune before submitting. */}
+   459→            {(!isVoice || voiceStage === "confirmed") && (
+   460→              <div className="space-y-1.5">
+   461→                <Label htmlFor="description">
+   462→                  {t("complaint.descriptionLabel")}{" "}
+   463→                  <span className="text-xs font-normal text-muted-foreground">({t("common.required")})</span>
+   464→                </Label>
+   465→                {isVoice ? (
+   466→                  <Textarea
+   467→                    id="description"
+   468→                    value={description}
+   469→                    onChange={(e) => setValue("description", e.target.value, { shouldValidate: true })}
+   470→                    placeholder={t("complaint.descriptionPlaceholder")}
+   471→                    rows={6}
+   472→                    className={cn(errors.description && "border-destructive")}
+   473→                  />
+   474→                ) : (
+   475→                  <Textarea
+   476→                    id="description"
+   477→                    placeholder={t("complaint.descriptionPlaceholder")}
+   478→                    rows={6}
+   479→                    className={cn(errors.description && "border-destructive")}
+   480→                    {...register("description")}
+   481→                  />
+   482→                )}
+   483→                {errors.description ? (
+   484→                  <p className="text-xs text-destructive">{errors.description.message}</p>
+   485→                ) : null}
+   486→                {fieldErrors.description ? (
+   487→                  <p className="text-xs text-destructive">{fieldErrors.description}</p>
+   488→                ) : null}
+   489→              </div>
+   490→            )}
+   491→
+   492→            {/* Department --------------------------------------------------------- */}
+   493→            <div className="space-y-1.5">
+   494→              <Label htmlFor="department">
+   495→                {t("complaint.departmentLabel")}{" "}
+   496→                <span className="text-xs font-normal text-muted-foreground">({t("common.optional")})</span>
+   497→              </Label>
+   498→              <Select
+   499→                defaultValue="auto"
+   500→                onValueChange={(v) => setValue("department_id", v, { shouldValidate: false })}
+   501→              >
+   502→                <SelectTrigger id="department" className="w-full">
+   503→                  <SelectValue />
+   504→                </SelectTrigger>
+   505→                <SelectContent>
+   506→                  <SelectItem value="auto">{t("complaint.departmentAuto")}</SelectItem>
+   507→                  {DEPARTMENTS.map((d) => (
+   508→                    <SelectItem key={d.id} value={d.id}>
+   509→                      {d.label}
+   510→                    </SelectItem>
+   511→                  ))}
+   512→                </SelectContent>
+   513→              </Select>
+   514→              <p className="text-xs text-muted-foreground">{t("complaint.departmentHint")}</p>
+   515→            </div>
+   516→
+   517→            {/* Attachments -------------------------------------------------------- */}
+   518→            <div className="space-y-2">
+   519→              <Label htmlFor="file-input">{t("complaint.attachmentsLabel")}</Label>
+   520→              <p className="text-xs text-muted-foreground">{t("complaint.attachmentsHint")}</p>
+   521→
+   522→              <div
+   523→                role="button"
+   524→                tabIndex={0}
+   525→                onClick={() => fileInputRef.current?.click()}
+   526→                onKeyDown={(e) => {
+   527→                  if (e.key === "Enter" || e.key === " ") {
+   528→                    e.preventDefault();
+   529→                    fileInputRef.current?.click();
+   530→                  }
+   531→                }}
+   532→                onDrop={onDrop}
+   533→                onDragOver={onDragOver}
+   534→                onDragEnter={onDragEnter}
+   535→                onDragLeave={onDragLeave}
+   536→                aria-label={t("complaint.attachmentsDrop")}
+   537→                className={cn(
+   538→                  "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-4 py-8 text-center transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+   539→                  isDragging
+   540→                    ? "border-primary bg-primary/5"
+   541→                    : "border-border bg-muted/30 hover:border-primary/40 hover:bg-primary/5"
+   542→                )}
+   543→              >
+   544→                <div className="flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+   545→                  <Upload className="size-5" aria-hidden />
+   546→                </div>
+   547→                <p className="text-sm font-medium text-foreground">{t("complaint.attachmentsDrop")}</p>
+   548→                <p className="text-xs text-muted-foreground">PDF, JPG, PNG, WEBP, HEIC — max 10 MB</p>
+   549→                <input
+   550→                  id="file-input"
+   551→                  ref={fileInputRef}
+   552→                  type="file"
+   553→                  multiple
+   554→                  accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,image/*,application/pdf"
+   555→                  onChange={onFileInputChange}
+   556→                  className="sr-only"
+   557→                />
+   558→              </div>
+   559→
+   560→              {attachments.length > 0 ? (
+   561→                <ul className="space-y-2" aria-label={t("complaint.attachmentsLabel")}>
+   562→                  {attachments.map((a, i) => (
+   563→                    <li
+   564→                      key={`${a.filename}-${i}`}
+   565→                      className="flex items-center gap-3 rounded-lg border border-border bg-card p-3"
+   566→                    >
+   567→                      <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+   568→                        <Paperclip className="size-4" aria-hidden />
+   569→                      </div>
+   570→                      <div className="min-w-0 flex-1">
+   571→                        <div className="flex items-center justify-between gap-2">
+   572→                          <p className="truncate text-sm font-medium text-foreground">{a.filename}</p>
+   573→                          <span className="shrink-0 text-xs text-muted-foreground">
+   574→                            {formatBytes(a.size_bytes)}
+   575→                          </span>
+   576→                        </div>
+   577→                        <div className="mt-1.5 flex items-center gap-2">
+   578→                          <Progress value={a.progress} className="h-1.5" />
+   579→                          <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+   580→                            {Math.round(a.progress)}%
+   581→                          </span>
+   582→                        </div>
+   583→                      </div>
+   584→                      <Button
+   585→                        type="button"
+   586→                        variant="ghost"
+   587→                        size="icon"
+   588→                        className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+   589→                        onClick={() => removeAttachment(i)}
+   590→                        aria-label={`${t("common.delete")} ${a.filename}`}
+   591→                      >
+   592→                        <X className="size-4" aria-hidden />
+   593→                      </Button>
+   594→                    </li>
+   595→                  ))}
+   596→                </ul>
+   597→              ) : null}
+   598→            </div>
+   599→
+   600→            {/* Location ----------------------------------------------------------- */}
+   601→            <div className="space-y-2">
+   602→              <Label>{t("complaint.locationLabel")}</Label>
+   603→              <p className="text-xs text-muted-foreground">{t("complaint.locationHint")}</p>
+   604→              <div className="flex flex-wrap items-center gap-3">
+   605→                <Button
+   606→                  type="button"
+   607→                  variant="outline"
+   608→                  onClick={captureLocation}
+   609→                  disabled={location.kind === "capturing"}
+   610→                  className="gap-1.5"
+   611→                >
+   612→                  {location.kind === "capturing" ? (
+   613→                    <Loader2 className="size-4 animate-spin" aria-hidden />
+   614→                  ) : (
+   615→                    <MapPin className="size-4" aria-hidden />
+   616→                  )}
+   617→                  {location.kind === "capturing"
+   618→                    ? t("complaint.locationCapturing")
+   619→                    : location.kind === "captured"
+   620→                      ? t("complaint.locationCapture")
+   621→                      : t("complaint.locationCapture")}
+   622→                </Button>
+   623→                {location.kind === "captured" ? (
+   624→                  <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+   625→                    <CheckCircle2 className="size-3.5" aria-hidden />
+   626→                    {t("complaint.locationCaptured")}: {location.address}
+   627→                  </div>
+   628→                ) : location.kind === "denied" ? (
+   629→                  <p className="text-xs text-destructive">{t("complaint.locationDenied")}</p>
+   630→                ) : null}
+   631→              </div>
+   632→            </div>
+   633→
+   634→            {/* Submit ------------------------------------------------------------- */}
+   635→            <div className="space-y-2 pt-2">
+   636→              {voiceBlocking ? (
+   637→                <p className="text-xs text-amber-600 dark:text-amber-400" role="status" aria-live="polite">
+   638→                  {voiceStage === "prompt"
+   639→                    ? t("complaint.voiceRecord") + " — " + t("common.required")
+   640→                    : t("complaint.voiceReviewHint")}
+   641→                </p>
+   642→              ) : null}
+   643→              <Button
+   644→                type="submit"
+   645→                size="lg"
+   646→                disabled={submitDisabled}
+   647→                className="w-full gap-2"
+   648→              >
+   649→                {mutation.isPending ? (
+   650→                  <>
+   651→                    <Loader2 className="size-4 animate-spin" aria-hidden />
+   652→                    {t("common.submitting")}
+   653→                  </>
+   654→                ) : (
+   655→                  <>
+   656→                    <FileText className="size-4" aria-hidden />
+   657→                    {t("complaint.submit")}
+   658→                    <ArrowRight className="size-4" aria-hidden />
+   659→                  </>
+   660→                )}
+   661→              </Button>
+   662→            </div>
+   663→          </form>
+   664→        </CardContent>
+   665→      </Card>
+   666→    </div>
+   667→  );
+   668→}
+   669→
