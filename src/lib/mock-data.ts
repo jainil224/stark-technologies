@@ -134,8 +134,8 @@ export const mockUsers: User[] = [
   },
   {
     id: "user_admin_1",
-    name: "Aditya Verma",
-    email: "aditya.admin@example.com",
+    name: "Daksh Verma",
+    email: "daksh.admin@example.com",
     role: "admin",
     preferred_language: "en",
     avatar_color: "#7c3aed",

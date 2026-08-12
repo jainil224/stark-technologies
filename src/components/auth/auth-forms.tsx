@@ -46,7 +46,7 @@ export function LoginForm() {
     { label: "Citizen — Priya", email: "priya@example.com" },
     { label: "Officer — Karan (PWD)", email: "karan.officer@example.com" },
     { label: "Officer — Lakshmi (Water)", email: "lakshmi.officer@example.com" },
-    { label: "Admin — Aditya", email: "aditya.admin@example.com" },
+    { label: "Admin — Daksh", email: "daksh.admin@example.com" },
   ];
 
   async function onSubmit(values: LoginValues) {
