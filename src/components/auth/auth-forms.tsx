@@ -77,7 +77,7 @@ export function LoginForm() {
             </span>
             <CardTitle className="text-xl">{t("auth.loginTitle")}</CardTitle>
           </div>
-          <Button variant="outline" size="sm" onClick={() => navigate("landing")}> 
+          <Button variant="outline" size="sm" onClick={() => navigate("landing")}>
             <ArrowLeft className="size-4" aria-hidden />
             {t("nav.back")}
           </Button>
