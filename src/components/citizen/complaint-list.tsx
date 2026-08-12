@@ -36,6 +36,7 @@ import {
 import type { Complaint, ComplaintStatus } from "@/lib/types";
 import { StatusBadge, PriorityBadge } from "@/components/shared/badges";
 import { EmptyState, ErrorState, CardSkeleton } from "@/components/shared/states";
+import ComplaintStats from "./complaint-stats";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,9 @@ export default function ComplaintList() {
           {t("nav.fileComplaint")}
         </Button>
       </div>
+
+      {/* Personal statistics dashboard ------------------------------ */}
+      {data && data.length > 0 ? <ComplaintStats complaints={data} /> : null}
 
       {/* Filter bar --------------------------------------------------------- */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">

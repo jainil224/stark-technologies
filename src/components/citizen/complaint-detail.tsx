@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -8,15 +7,11 @@ import {
   MapPin,
   Sparkles,
   CalendarClock,
-  GitBranch,
   Mic,
   Languages,
   FileText,
   Paperclip,
-  ChevronDown,
   Loader2,
-  ImageIcon,
-  File as FileIcon,
   Building2,
 } from "lucide-react";
 
@@ -29,25 +24,19 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 
 import { useTranslations } from "@/lib/i18n";
 import { useNav } from "@/lib/nav";
 import { complaintsApi } from "@/lib/api";
 import {
-  formatBytes,
   formatDate,
   formatDateTime,
 } from "@/lib/format";
-import type { Attachment } from "@/lib/types";
 import { StatusBadge, PriorityBadge } from "@/components/shared/badges";
 import { CardSkeleton, ErrorState } from "@/components/shared/states";
+import { AttachmentItem } from "@/components/shared/attachment-preview";
+import { DuplicateClusterCallout } from "@/components/shared/duplicate-cluster-dialog";
 import { StatusTimeline } from "./status-timeline";
-import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // ComplaintDetail — default export
@@ -354,23 +343,12 @@ export default function ComplaintDetail({ complaintId }: { complaintId: string }
             </Card>
           ) : null}
 
-          {/* Duplicate group */}
+          {/* Duplicate group — interactive callout, opens cluster dialog */}
           {hasDuplicates ? (
-            <Card className="py-5 border-amber-300/60 bg-amber-50/50 dark:border-amber-900/60 dark:bg-amber-950/20">
-              <CardContent className="flex items-start gap-3 py-0">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
-                  <GitBranch className="size-4" aria-hidden />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">
-                    {t("complaint.detailDuplicates", { count: complaint.duplicate_count ?? 0 })}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {t("officer.detailDuplicatesDesc", { count: complaint.duplicate_count ?? 0 })}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+            <DuplicateClusterCallout
+              count={complaint.duplicate_count ?? 0}
+              referenceNumber={complaint.reference_number}
+            />
           ) : null}
         </aside>
       </motion.div>
@@ -401,58 +379,5 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
       {children}
     </div>
-  );
-}
-
-function AttachmentItem({ attachment }: { attachment: Attachment }) {
-  const isImage = attachment.mime_type.startsWith("image/");
-  const isPdf = attachment.mime_type === "application/pdf";
-  const [open, setOpen] = useState(false);
-
-  return (
-    <li className="rounded-lg border border-border bg-card p-3">
-      <div className="flex items-center gap-3">
-        <div
-          className={cn(
-            "flex size-9 shrink-0 items-center justify-center rounded-md",
-            isImage
-              ? "bg-primary/10 text-primary"
-              : isPdf
-                ? "bg-rose-500/10 text-rose-600 dark:text-rose-400"
-                : "bg-muted text-muted-foreground"
-          )}
-        >
-          {isImage ? (
-            <ImageIcon className="size-4" aria-hidden />
-          ) : isPdf ? (
-            <FileText className="size-4" aria-hidden />
-          ) : (
-            <FileIcon className="size-4" aria-hidden />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">{attachment.filename}</p>
-          <p className="text-xs text-muted-foreground">
-            {formatBytes(attachment.size_bytes)} · {attachment.mime_type}
-          </p>
-        </div>
-        {attachment.ocr_text ? (
-          <Collapsible open={open} onOpenChange={setOpen}>
-            <CollapsibleTrigger asChild>
-              <Button variant="ghost" size="sm" className="gap-1 text-xs">
-                OCR
-                <ChevronDown
-                  className={cn("size-3.5 transition-transform", open && "rotate-180")}
-                  aria-hidden
-                />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="mt-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs leading-relaxed text-foreground/80">
-              {attachment.ocr_text}
-            </CollapsibleContent>
-          </Collapsible>
-        ) : null}
-      </div>
-    </li>
   );
 }

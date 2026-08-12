@@ -1,0 +1,960 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useMemo, useState } from "react";
+     4→import { useQuery } from "@tanstack/react-query";
+     5→import {
+     6→  BarChart,
+     7→  Bar,
+     8→  LineChart,
+     9→  Line,
+    10→  Cell,
+    11→  XAxis,
+    12→  YAxis,
+    13→  CartesianGrid,
+    14→  Tooltip,
+    15→  Legend,
+    16→  LabelList,
+    17→  ResponsiveContainer,
+    18→} from "recharts";
+    19→import { motion } from "framer-motion";
+    20→import {
+    21→  FileText,
+    22→  Clock,
+    23→  CheckCircle2,
+    24→  Gauge,
+    25→  TrendingUp,
+    26→  TrendingDown,
+    27→  ChevronDown,
+    28→  ChevronUp,
+    29→  RefreshCw,
+    30→} from "lucide-react";
+    31→
+    32→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+    33→import {
+    34→  Table,
+    35→  TableBody,
+    36→  TableCell,
+    37→  TableHead,
+    38→  TableHeader,
+    39→  TableRow,
+    40→  TableCaption,
+    41→} from "@/components/ui/table";
+    42→import { Skeleton } from "@/components/ui/skeleton";
+    43→import { Progress } from "@/components/ui/progress";
+    44→import { Badge } from "@/components/ui/badge";
+    45→import { Button } from "@/components/ui/button";
+    46→import {
+    47→  Collapsible,
+    48→  CollapsibleContent,
+    49→  CollapsibleTrigger,
+    50→} from "@/components/ui/collapsible";
+    51→
+    52→import { useTranslations } from "@/lib/i18n";
+    53→import { adminApi } from "@/lib/api";
+    54→import { statusOrder, priorityOrder } from "@/lib/format";
+    55→import type {
+    56→  AnalyticsSummary,
+    57→  ComplaintStatus,
+    58→  Priority,
+    59→  Locale,
+    60→} from "@/lib/types";
+    61→import { ErrorState } from "@/components/shared/states";
+    62→import { cn } from "@/lib/utils";
+    63→
+    64→// ---------------------------------------------------------------------------
+    65→// AdminAnalytics — default export
+    66→//
+    67→// Renders the platform-wide analytics dashboard: KPI cards (with sparklines
+    68→// and 7-day trend badges), SLA compliance bar, and four recharts
+    69→// visualisations (trend line, status horizontal bar, priority bar, dept
+    70→// stacked bar). Each chart has a sibling text-equivalent `<Table>` wrapped
+    71→// in a shadcn Collapsible (default closed) for screen-reader parity per
+    72→// FRONTEND.md §9 — the sr-only `<TableCaption>` is always present so AT
+    73→// users still get the chart summary even when the table is collapsed.
+    74→// ---------------------------------------------------------------------------
+    75→
+    76→// Hardcoded status / priority palette — civic emerald/amber palette, no
+    77→// indigo/blue brand colours. `in_progress` uses teal (not sky) to stay safely
+    78→// outside the no-blue rule for charts.
+    79→const STATUS_COLORS: Record<ComplaintStatus, string> = {
+    80→  submitted: "#64748b", // slate
+    81→  under_review: "#d97706", // amber
+    82→  in_progress: "#0d9488", // teal
+    83→  resolved: "#059669", // emerald
+    84→  rejected: "#e11d48", // rose
+    85→  reopened: "#ea580c", // orange
+    86→};
+    87→
+    88→const PRIORITY_COLORS: Record<Priority, string> = {
+    89→  low: "#64748b", // slate
+    90→  medium: "#0d9488", // teal
+    91→  high: "#d97706", // amber
+    92→  urgent: "#e11d48", // rose
+    93→};
+    94→
+    95→const TREND_FILED = "#d97706"; // amber
+    96→const TREND_RESOLVED = "#059669"; // emerald
+    97→
+    98→const CHART_HEIGHT = 280;
+    99→const SPARK_HEIGHT = 40;
+   100→
+   101→// Shared recharts Tooltip styling — subtle, on-palette, no shadows.
+   102→const CHART_TOOLTIP_STYLE: React.CSSProperties = {
+   103→  borderRadius: 8,
+   104→  border: "1px solid var(--border)",
+   105→  background: "var(--background)",
+   106→  color: "var(--foreground)",
+   107→  fontSize: 12,
+   108→  boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+   109→};
+   110→
+   111→type TrendPoint = AnalyticsSummary["trend"][number];
+   112→
+   113→type TrendDirection = "up" | "down" | "flat";
+   114→type TrendInfo = { pct: number; favorable: boolean; direction: TrendDirection } | null;
+   115→
+   116→// Compute the % change of a metric comparing the last 7 days vs the
+   117→// previous 7 days from the 14-day trend. Returns null when there's no
+   118→// prior data to compare against (prev7 === 0). `favorable` is determined
+   119→// by the caller-supplied direction ("up" or "down") that counts as good.
+   120→function computeTrendPct(
+   121→  trend: AnalyticsSummary["trend"],
+   122→  accessor: (d: TrendPoint) => number,
+   123→  favorableDirection: "up" | "down",
+   124→): TrendInfo {
+   125→  if (trend.length < 14) return null;
+   126→  const last7 = trend.slice(-7).reduce((s, d) => s + accessor(d), 0);
+   127→  const prev7 = trend.slice(-14, -7).reduce((s, d) => s + accessor(d), 0);
+   128→  if (prev7 === 0) return null;
+   129→  const pct = ((last7 - prev7) / Math.abs(prev7)) * 100;
+   130→  const direction: TrendDirection =
+   131→    pct > 0.5 ? "up" : pct < -0.5 ? "down" : "flat";
+   132→  const favorable =
+   133→    direction === "flat" ? true : direction === favorableDirection;
+   134→  return { pct, direction, favorable };
+   135→}
+   136→
+   137→// Build the cumulative open backlog sparkline (filed − resolved per day,
+   138→// accumulated and clamped at 0 so it never implies negative complaints).
+   139→function buildOpenSparkline(trend: AnalyticsSummary["trend"]): number[] {
+   140→  let cumulative = 0;
+   141→  const out: number[] = [];
+   142→  for (const d of trend) {
+   143→    cumulative += d.filed - d.resolved;
+   144→    if (cumulative < 0) cumulative = 0;
+   145→    out.push(cumulative);
+   146→  }
+   147→  return out;
+   148→}
+   149→
+   150→// Type alias for the translate function so helpers can use it without
+   151→// importing the hook.
+   152→type TFunc = ReturnType<typeof useTranslations>["t"];
+   153→
+   154→// Format "X min ago" relative to a caller-supplied `now` (so the component
+   155→// can re-evaluate the relative time on a 60s tick). Mirrors the logic in
+   156→// lib/format.ts formatRelative but accepts an explicit now.
+   157→function relativeAgo(
+   158→  then: number,
+   159→  now: number,
+   160→  locale: Locale,
+   161→  t: TFunc,
+   162→): string {
+   163→  const diff = Math.max(0, now - then);
+   164→  const minutes = Math.floor(diff / 60000);
+   165→  const hours = Math.floor(diff / 3600000);
+   166→  const days = Math.floor(diff / 86400000);
+   167→  if (minutes < 1) return locale === "en" ? "just now" : t("common.justNow");
+   168→  if (minutes < 60) return t("common.minutesAgo", { n: minutes });
+   169→  if (hours < 24) return t("common.hoursAgo", { n: hours });
+   170→  if (days < 30) return t("common.daysAgo", { n: days });
+   171→  return new Date(then).toLocaleDateString(locale, {
+   172→    year: "numeric",
+   173→    month: "short",
+   174→    day: "numeric",
+   175→  });
+   176→}
+   177→
+   178→export default function AdminAnalytics() {
+   179→  const { t, locale } = useTranslations();
+   180→
+   181→  const { data, isLoading, isError, error, refetch, dataUpdatedAt } = useQuery({
+   182→    queryKey: ["admin", "analytics"],
+   183→    queryFn: async () => {
+   184→      const { data, error } = await adminApi.analytics();
+   185→      if (error || !data) throw error ?? new Error("Failed to load");
+   186→      return data;
+   187→    },
+   188→    refetchInterval: 30000,
+   189→  });
+   190→
+   191→  // Tick "now" every 60s so the "Updated X min ago" label stays accurate
+   192→  // without waiting for the next 30s poll to re-render.
+   193→  const [now, setNow] = useState(() => Date.now());
+   194→  useEffect(() => {
+   195→    const id = setInterval(() => setNow(Date.now()), 60000);
+   196→    return () => clearInterval(id);
+   197→  }, []);
+   198→
+   199→  // Memoise derived chart data — sort by canonical order so the chart
+   200→  // and the table show the EXACT same set of categories in the same
+   201→  // order (fixes the "Reopened in table but not chart" inconsistency).
+   202→  const { statusData, priorityData, trendFiledSpark, trendResolvedSpark, trendOpenSpark, trendAvgSpark } =
+   203→    useMemo(() => {
+   204→      const statusData = (data?.by_status ?? [])
+   205→        .slice()
+   206→        .sort((a, b) => statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status));
+   207→      const priorityData = (data?.by_priority ?? [])
+   208→        .slice()
+   209→        .sort((a, b) => priorityOrder.indexOf(a.priority) - priorityOrder.indexOf(b.priority));
+   210→      const trend = data?.trend ?? [];
+   211→      return {
+   212→        statusData,
+   213→        priorityData,
+   214→        trendFiledSpark: trend.map((d) => d.filed),
+   215→        trendResolvedSpark: trend.map((d) => d.resolved),
+   216→        trendOpenSpark: buildOpenSparkline(trend),
+   217→        trendAvgSpark: data ? trend.map(() => data.avg_resolution_days) : [],
+   218→      };
+   219→    }, [data]);
+   220→
+   221→  // KPI trend computations.
+   222→  // - Total: filed volume, fewer filed = favorable (less workload).
+   223→  // - Open: cumulative open backlog delta, down = favorable.
+   224→  // - Resolved: resolved volume, up = favorable.
+   225→  // - Avg resolution: no per-day trend available → null badge.
+   226→  const totalTrend: TrendInfo = data
+   227→    ? computeTrendPct(data.trend, (d) => d.filed, "down")
+   228→    : null;
+   229→  const resolvedTrend: TrendInfo = data
+   230→    ? computeTrendPct(data.trend, (d) => d.resolved, "up")
+   231→    : null;
+   232→  // Open backlog trend: derive from the cumulative-open sparkline (not raw
+   233→  // filed/resolved). Treat "down" as favorable (shrinking backlog).
+   234→  const openTrend: TrendInfo = data
+   235→    ? computeTrendPct(
+   236→        buildOpenSparkline(data.trend).map((v, i) => ({
+   237→          date: data.trend[i]?.date ?? "",
+   238→          filed: v,
+   239→          resolved: 0,
+   240→        })),
+   241→        (d) => d.filed,
+   242→        "down",
+   243→      )
+   244→    : null;
+   245→
+   246→  if (isLoading) return <AnalyticsSkeleton />;
+   247→  if (isError) {
+   248→    return (
+   249→      <ErrorState
+   250→        message={(error as Error)?.message ?? t("errors.generic")}
+   251→        onRetry={() => void refetch()}
+   252→      />
+   253→    );
+   254→  }
+   255→  if (!data) return null;
+   256→
+   257→  // Compute the "Updated X ago" label from `now` so the 60s tick re-renders
+   258→  // the relative time even when the 30s poll hasn't landed new data.
+   259→  const lastUpdatedLabel = dataUpdatedAt
+   260→    ? t("admin.lastUpdated", {
+   261→        time: relativeAgo(new Date(dataUpdatedAt).getTime(), now, locale, t),
+   262→      })
+   263→    : null;
+   264→
+   265→  return (
+   266→    <div className="space-y-5">
+   267→      {/* Header ------------------------------------------------------------- */}
+   268→      <div className="flex flex-wrap items-end justify-between gap-2">
+   269→        <div className="space-y-1">
+   270→          <h2 className="text-xl font-semibold tracking-tight text-foreground">
+   271→            {t("admin.analyticsTitle")}
+   272→          </h2>
+   273→          <p className="text-sm text-muted-foreground">{t("admin.analyticsSubtitle")}</p>
+   274→        </div>
+   275→        {lastUpdatedLabel ? (
+   276→          <span
+   277→            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+   278→            aria-live="polite"
+   279→          >
+   280→            <RefreshCw className="size-3.5" aria-hidden />
+   281→            <time dateTime={new Date(dataUpdatedAt).toISOString()}>{lastUpdatedLabel}</time>
+   282→          </span>
+   283→        ) : null}
+   284→      </div>
+   285→
+   286→      {/* KPI cards ---------------------------------------------------------- */}
+   287→      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   288→        <KpiCard
+   289→          icon={FileText}
+   290→          label={t("admin.totalComplaints")}
+   291→          value={data.total_complaints}
+   292→          tone="default"
+   293→          sparkData={trendFiledSpark}
+   294→          sparkColor={TREND_FILED}
+   295→          trend={totalTrend}
+   296→          t={t}
+   297→          index={0}
+   298→        />
+   299→        <KpiCard
+   300→          icon={Clock}
+   301→          label={t("admin.openComplaints")}
+   302→          value={data.open_complaints}
+   303→          tone="open"
+   304→          sparkData={trendOpenSpark}
+   305→          sparkColor={TREND_FILED}
+   306→          trend={openTrend}
+   307→          t={t}
+   308→          index={1}
+   309→        />
+   310→        <KpiCard
+   311→          icon={CheckCircle2}
+   312→          label={t("admin.resolvedComplaints")}
+   313→          value={data.resolved_complaints}
+   314→          tone="resolved"
+   315→          sparkData={trendResolvedSpark}
+   316→          sparkColor={TREND_RESOLVED}
+   317→          trend={resolvedTrend}
+   318→          t={t}
+   319→          index={2}
+   320→        />
+   321→        <KpiCard
+   322→          icon={Gauge}
+   323→          label={t("admin.avgResolution")}
+   324→          value={data.avg_resolution_days}
+   325→          tone="sla"
+   326→          sparkData={trendAvgSpark}
+   327→          sparkColor="#0d9488"
+   328→          trend={null}
+   329→          t={t}
+   330→          index={3}
+   331→        />
+   332→      </div>
+   333→
+   334→      {/* SLA compliance bar ------------------------------------------------- */}
+   335→      <Card className="py-5">
+   336→        <CardHeader className="pb-3">
+   337→          <CardTitle className="flex items-center gap-2 text-base">
+   338→            <TrendingUp className="size-4 text-primary" aria-hidden />
+   339→            {t("admin.slaCompliance")}
+   340→          </CardTitle>
+   341→          <CardDescription className="flex items-baseline justify-between gap-2">
+   342→            <span>{Math.round(data.sla_compliance_pct)}%</span>
+   343→            <span className="text-xs text-muted-foreground">{t("admin.slaCompliance")}</span>
+   344→          </CardDescription>
+   345→        </CardHeader>
+   346→        <CardContent>
+   347→          <Progress
+   348→            value={data.sla_compliance_pct}
+   349→            aria-label={`${t("admin.slaCompliance")}: ${Math.round(data.sla_compliance_pct)}%`}
+   350→          />
+   351→        </CardContent>
+   352→      </Card>
+   353→
+   354→      {/* Trend chart -------------------------------------------------------- */}
+   355→      <ChartCard title={t("admin.trend")} description={t("admin.analyticsSubtitle")}>
+   356→        <div style={{ height: CHART_HEIGHT }} className="w-full">
+   357→          <ResponsiveContainer width="100%" height="100%">
+   358→            <LineChart data={data.trend} margin={{ top: 8, right: 12, bottom: 4, left: -12 }}>
+   359→              <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+   360→              <XAxis
+   361→                dataKey="date"
+   362→                tickFormatter={(d: string) =>
+   363→                  new Date(d).toLocaleDateString(locale, { month: "short", day: "numeric" })
+   364→                }
+   365→                tick={{ fontSize: 11 }}
+   366→                stroke="currentColor"
+   367→                className="text-muted-foreground"
+   368→              />
+   369→              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} stroke="currentColor" className="text-muted-foreground" />
+   370→              <Tooltip
+   371→                contentStyle={CHART_TOOLTIP_STYLE}
+   372→                labelFormatter={(d: string) =>
+   373→                  new Date(d).toLocaleDateString(locale, {
+   374→                    weekday: "short",
+   375→                    month: "short",
+   376→                    day: "numeric",
+   377→                  })
+   378→                }
+   379→                formatter={(value: number, name: string) => [value, name === "filed" ? t("admin.filed") : t("admin.resolved")]}
+   380→              />
+   381→              <Legend wrapperStyle={{ fontSize: 12 }} />
+   382→              <Line
+   383→                type="monotone"
+   384→                dataKey="filed"
+   385→                name={t("admin.filed")}
+   386→                stroke={TREND_FILED}
+   387→                strokeWidth={2}
+   388→                dot={false}
+   389→                activeDot={{ r: 4 }}
+   390→              />
+   391→              <Line
+   392→                type="monotone"
+   393→                dataKey="resolved"
+   394→                name={t("admin.resolved")}
+   395→                stroke={TREND_RESOLVED}
+   396→                strokeWidth={2}
+   397→                dot={false}
+   398→                activeDot={{ r: 4 }}
+   399→              />
+   400→            </LineChart>
+   401→          </ResponsiveContainer>
+   402→        </div>
+   403→        <CollapsibleTable
+   404→          showLabel={t("admin.showTable")}
+   405→          hideLabel={t("admin.hideTable")}
+   406→        >
+   407→          <TrendTable data={data.trend} locale={locale} t={t} />
+   408→        </CollapsibleTable>
+   409→      </ChartCard>
+   410→
+   411→      {/* Status + Priority row --------------------------------------------- */}
+   412→      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+   413→        <ChartCard title={t("admin.byStatus")} description={t("admin.analyticsSubtitle")}>
+   414→          <div style={{ height: CHART_HEIGHT }} className="w-full">
+   415→            <ResponsiveContainer width="100%" height="100%">
+   416→              <BarChart
+   417→                data={statusData}
+   418→                layout="vertical"
+   419→                margin={{ top: 4, right: 28, bottom: 4, left: 8 }}
+   420→              >
+   421→                <CartesianGrid strokeDasharray="3 3" className="stroke-border" horizontal={false} />
+   422→                <XAxis
+   423→                  type="number"
+   424→                  allowDecimals={false}
+   425→                  tick={{ fontSize: 11 }}
+   426→                  stroke="currentColor"
+   427→                  className="text-muted-foreground"
+   428→                />
+   429→                <YAxis
+   430→                  type="category"
+   431→                  dataKey="status"
+   432→                  width={120}
+   433→                  tick={{ fontSize: 11 }}
+   434→                  stroke="currentColor"
+   435→                  className="text-muted-foreground"
+   436→                  tickFormatter={(s: string) => t(`status.${s}`)}
+   437→                />
+   438→                <Tooltip
+   439→                  contentStyle={CHART_TOOLTIP_STYLE}
+   440→                  labelFormatter={(label: string) => t(`status.${label}`)}
+   441→                  formatter={(value: number) => [value, t("common.all")]}
+   442→                />
+   443→                <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={18}>
+   444→                  {statusData.map((entry) => (
+   445→                    <Cell key={entry.status} fill={STATUS_COLORS[entry.status]} />
+   446→                  ))}
+   447→                  <LabelList
+   448→                    dataKey="count"
+   449→                    position="right"
+   450→                    style={{ fontSize: 11, fill: "var(--foreground)" }}
+   451→                  />
+   452→                </Bar>
+   453→              </BarChart>
+   454→            </ResponsiveContainer>
+   455→          </div>
+   456→          <CollapsibleTable
+   457→            showLabel={t("admin.showTable")}
+   458→            hideLabel={t("admin.hideTable")}
+   459→          >
+   460→            <StatusTable data={statusData} t={t} />
+   461→          </CollapsibleTable>
+   462→        </ChartCard>
+   463→
+   464→        <ChartCard title={t("admin.byPriority")} description={t("admin.analyticsSubtitle")}>
+   465→          <div style={{ height: CHART_HEIGHT }} className="w-full">
+   466→            <ResponsiveContainer width="100%" height="100%">
+   467→              <BarChart data={priorityData} margin={{ top: 8, right: 28, bottom: 4, left: -12 }}>
+   468→                <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+   469→                <XAxis
+   470→                  dataKey="priority"
+   471→                  tickFormatter={(p: string) => t(`priority.${p}`)}
+   472→                  tick={{ fontSize: 11 }}
+   473→                  stroke="currentColor"
+   474→                  className="text-muted-foreground"
+   475→                />
+   476→                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} stroke="currentColor" className="text-muted-foreground" />
+   477→                <Tooltip
+   478→                  contentStyle={CHART_TOOLTIP_STYLE}
+   479→                  labelFormatter={(label: string) => t(`priority.${label}`)}
+   480→                  formatter={(value: number) => [value, t("common.all")]}
+   481→                />
+   482→                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+   483→                  {priorityData.map((entry) => (
+   484→                    <Cell key={entry.priority} fill={PRIORITY_COLORS[entry.priority]} />
+   485→                  ))}
+   486→                  <LabelList
+   487→                    dataKey="count"
+   488→                    position="top"
+   489→                    style={{ fontSize: 11, fill: "var(--foreground)" }}
+   490→                  />
+   491→                </Bar>
+   492→              </BarChart>
+   493→            </ResponsiveContainer>
+   494→          </div>
+   495→          <CollapsibleTable
+   496→            showLabel={t("admin.showTable")}
+   497→            hideLabel={t("admin.hideTable")}
+   498→          >
+   499→            <PriorityTable data={priorityData} t={t} />
+   500→          </CollapsibleTable>
+   501→        </ChartCard>
+   502→      </div>
+   503→
+   504→      {/* By department ------------------------------------------------------ */}
+   505→      <ChartCard title={t("admin.byDepartment")} description={t("admin.analyticsSubtitle")}>
+   506→        <div style={{ height: Math.max(CHART_HEIGHT, data.by_department.length * 48) }} className="w-full">
+   507→          <ResponsiveContainer width="100%" height="100%">
+   508→            <BarChart
+   509→              data={data.by_department}
+   510→              layout="vertical"
+   511→              margin={{ top: 4, right: 12, bottom: 4, left: 8 }}
+   512→            >
+   513→              <CartesianGrid strokeDasharray="3 3" className="stroke-border" horizontal={false} />
+   514→              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} stroke="currentColor" className="text-muted-foreground" />
+   515→              <YAxis
+   516→                type="category"
+   517→                dataKey="department_name"
+   518→                width={140}
+   519→                tick={{ fontSize: 11 }}
+   520→                stroke="currentColor"
+   521→                className="text-muted-foreground"
+   522→              />
+   523→              <Tooltip
+   524→                contentStyle={CHART_TOOLTIP_STYLE}
+   525→                formatter={(value: number, name: string) => [
+   526→                  value,
+   527→                  name === "resolved" ? t("admin.resolved") : t("admin.openComplaints"),
+   528→                ]}
+   529→              />
+   530→              <Legend
+   531→                wrapperStyle={{ fontSize: 12 }}
+   532→                formatter={(value: string) =>
+   533→                  value === "resolved" ? t("admin.resolved") : t("admin.openComplaints")
+   534→                }
+   535→              />
+   536→              <Bar dataKey="resolved" name={t("admin.resolved")} fill={TREND_RESOLVED} radius={[0, 4, 4, 0]} stackId="a" />
+   537→              <Bar dataKey="open" name={t("admin.openComplaints")} fill={TREND_FILED} radius={[0, 4, 4, 0]} stackId="a" />
+   538→            </BarChart>
+   539→          </ResponsiveContainer>
+   540→        </div>
+   541→        <CollapsibleTable
+   542→          showLabel={t("admin.showTable")}
+   543→          hideLabel={t("admin.hideTable")}
+   544→        >
+   545→          <DepartmentTable data={data.by_department} t={t} />
+   546→        </CollapsibleTable>
+   547→      </ChartCard>
+   548→    </div>
+   549→  );
+   550→}
+   551→
+   552→// ---------------------------------------------------------------------------
+   553→// KPI card — icon top-left, big number, label, then a row with sparkline on
+   554→// the left and a trend badge on the right.
+   555→// ---------------------------------------------------------------------------
+   556→type KpiTone = "default" | "open" | "resolved" | "sla";
+   557→
+   558→function KpiCard({
+   559→  icon: Icon,
+   560→  label,
+   561→  value,
+   562→  suffix,
+   563→  tone,
+   564→  sparkData,
+   565→  sparkColor,
+   566→  trend,
+   567→  t,
+   568→  index,
+   569→}: {
+   570→  icon: React.ComponentType<{ className?: string }>;
+   571→  label: string;
+   572→  value: number;
+   573→  suffix?: string;
+   574→  tone: KpiTone;
+   575→  sparkData: number[];
+   576→  sparkColor: string;
+   577→  trend: TrendInfo;
+   578→  t: ReturnType<typeof useTranslations>["t"];
+   579→  index: number;
+   580→}) {
+   581→  const toneClasses: Record<KpiTone, string> = {
+   582→    default: "border-border bg-card",
+   583→    open: "border-amber-200 bg-amber-50/50 dark:border-amber-900/40 dark:bg-amber-950/20",
+   584→    resolved: "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/40 dark:bg-emerald-950/20",
+   585→    sla: "border-primary/30 bg-primary/5",
+   586→  };
+   587→  const iconClasses: Record<KpiTone, string> = {
+   588→    default: "bg-primary/10 text-primary",
+   589→    open: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+   590→    resolved: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+   591→    sla: "bg-primary/15 text-primary",
+   592→  };
+   593→
+   594→  return (
+   595→    <motion.div
+   596→      initial={{ opacity: 0, y: 8 }}
+   597→      animate={{ opacity: 1, y: 0 }}
+   598→      transition={{ duration: 0.3, delay: Math.min(index * 0.05, 0.25), ease: "easeOut" }}
+   599→    >
+   600→      <Card className={cn("h-full py-4", toneClasses[tone])}>
+   601→        <CardContent className="space-y-3">
+   602→          <span
+   603→            className={cn(
+   604→              "flex size-8 items-center justify-center rounded-lg",
+   605→              iconClasses[tone],
+   606→            )}
+   607→          >
+   608→            <Icon className="size-4" aria-hidden />
+   609→          </span>
+   610→          <div>
+   611→            <p className="text-2xl font-semibold leading-none tabular-nums text-foreground">
+   612→              {value}
+   613→              {suffix ? (
+   614→                <span className="ml-0.5 text-sm font-normal text-muted-foreground">{suffix}</span>
+   615→              ) : null}
+   616→            </p>
+   617→            <p className="mt-1 text-xs text-muted-foreground">{label}</p>
+   618→          </div>
+   619→          <div className="flex items-end justify-between gap-2">
+   620→            {sparkData.length > 0 ? (
+   621→              <Sparkline data={sparkData} color={sparkColor} />
+   622→            ) : (
+   623→              <span className="h-10" aria-hidden />
+   624→            )}
+   625→            <TrendBadge trend={trend} t={t} />
+   626→          </div>
+   627→        </CardContent>
+   628→      </Card>
+   629→    </motion.div>
+   630→  );
+   631→}
+   632→
+   633→// ---------------------------------------------------------------------------
+   634→// Mini line chart — no axes, no grid, no tooltip. Pure trend shape.
+   635→// ---------------------------------------------------------------------------
+   636→function Sparkline({ data, color }: { data: number[]; color: string }) {
+   637→  if (data.length < 2) return null;
+   638→  const chartData = data.map((v, i) => ({ i, v }));
+   639→  return (
+   640→    <div
+   641→      style={{ height: SPARK_HEIGHT, width: 80 }}
+   642→      role="img"
+   643→      aria-label="14-day trend"
+   644→    >
+   645→      <ResponsiveContainer width="100%" height="100%">
+   646→        <LineChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+   647→          <Line
+   648→            type="monotone"
+   649→            dataKey="v"
+   650→            stroke={color}
+   651→            strokeWidth={1.5}
+   652→            dot={false}
+   653→            isAnimationActive={false}
+   654→          />
+   655→        </LineChart>
+   656→      </ResponsiveContainer>
+   657→    </div>
+   658→  );
+   659→}
+   660→
+   661→// ---------------------------------------------------------------------------
+   662→// Trend badge — pill showing % change vs last week. Green when favorable,
+   663→// amber when unfavorable. Direction icon reflects the actual change.
+   664→// ---------------------------------------------------------------------------
+   665→function TrendBadge({
+   666→  trend,
+   667→  t,
+   668→}: {
+   669→  trend: TrendInfo;
+   670→  t: ReturnType<typeof useTranslations>["t"];
+   671→}) {
+   672→  if (!trend) {
+   673→    return (
+   674→      <Badge
+   675→        variant="outline"
+   676→        className="border-border bg-muted/40 text-muted-foreground"
+   677→      >
+   678→        <span className="tabular-nums">{t("admin.noTrend")}</span>
+   679→      </Badge>
+   680→    );
+   681→  }
+   682→  const DirectionIcon = trend.direction === "up" ? TrendingUp : trend.direction === "down" ? TrendingDown : null;
+   683→  const toneClass = trend.favorable
+   684→    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300"
+   685→    : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300";
+   686→  const pctLabel = trend.direction === "up" ? t("admin.trendUp", { pct: Math.round(Math.abs(trend.pct)) }) : t("admin.trendDown", { pct: Math.round(Math.abs(trend.pct)) });
+   687→  return (
+   688→    <Badge variant="outline" className={cn("gap-0.5 px-1.5", toneClass)} title={t("admin.vsLastWeek")}>
+   689→      {DirectionIcon ? <DirectionIcon className="size-3" aria-hidden /> : null}
+   690→      <span className="tabular-nums">{pctLabel}</span>
+   691→    </Badge>
+   692→  );
+   693→}
+   694→
+   695→// ---------------------------------------------------------------------------
+   696→// ChartCard wrapper
+   697→// ---------------------------------------------------------------------------
+   698→function ChartCard({
+   699→  title,
+   700→  description,
+   701→  children,
+   702→}: {
+   703→  title: string;
+   704→  description?: string;
+   705→  children: React.ReactNode;
+   706→}) {
+   707→  return (
+   708→    <Card className="h-full py-5">
+   709→      <CardHeader className="pb-3">
+   710→        <CardTitle className="text-base">{title}</CardTitle>
+   711→        {description ? <CardDescription>{description}</CardDescription> : null}
+   712→      </CardHeader>
+   713→      <CardContent className="space-y-4">{children}</CardContent>
+   714→    </Card>
+   715→  );
+   716→}
+   717→
+   718→// ---------------------------------------------------------------------------
+   719→// Collapsible wrapper for a chart's sibling text table. Defaults to closed.
+   720→// The table's sr-only <TableCaption> stays present in the DOM for screen
+   721→// readers even when collapsed — only the visible rows toggle.
+   722→// ---------------------------------------------------------------------------
+   723→function CollapsibleTable({
+   724→  showLabel,
+   725→  hideLabel,
+   726→  children,
+   727→}: {
+   728→  showLabel: string;
+   729→  hideLabel: string;
+   730→  children: React.ReactNode;
+   731→}) {
+   732→  const [open, setOpen] = useState(false);
+   733→  return (
+   734→    <Collapsible open={open} onOpenChange={setOpen} className="space-y-2">
+   735→      <CollapsibleTrigger asChild>
+   736→        <Button
+   737→          variant="ghost"
+   738→          size="sm"
+   739→          className="h-7 gap-1 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+   740→          aria-expanded={open}
+   741→        >
+   742→          {open ? (
+   743→            <ChevronUp className="size-3.5" aria-hidden />
+   744→          ) : (
+   745→            <ChevronDown className="size-3.5" aria-hidden />
+   746→          )}
+   747→          {open ? hideLabel : showLabel}
+   748→        </Button>
+   749→      </CollapsibleTrigger>
+   750→      <CollapsibleContent>{children}</CollapsibleContent>
+   751→    </Collapsible>
+   752→  );
+   753→}
+   754→
+   755→// ---------------------------------------------------------------------------
+   756→// Accessible text-equivalent tables
+   757→// ---------------------------------------------------------------------------
+   758→function TrendTable({
+   759→  data,
+   760→  locale,
+   761→  t,
+   762→}: {
+   763→  data: AnalyticsSummary["trend"];
+   764→  locale: Locale;
+   765→  t: TFunc;
+   766→}) {
+   767→  // Show the most recent 7 days in the visible companion table; the rest are
+   768→  // still reachable via the chart tooltip. Keeps the page readable.
+   769→  const recent = data.slice(-7);
+   770→  return (
+   771→    <Table>
+   772→      <TableCaption className="sr-only">
+   773→        {t("admin.trend")} — {t("admin.filed")} / {t("admin.resolved")}
+   774→      </TableCaption>
+   775→      <TableHeader>
+   776→        <TableRow className="bg-muted/40">
+   777→          <TableHead className="pl-3">{t("officer.colSubmitted")}</TableHead>
+   778→          <TableHead className="text-right">{t("admin.filed")}</TableHead>
+   779→          <TableHead className="pr-3 text-right">{t("admin.resolved")}</TableHead>
+   780→        </TableRow>
+   781→      </TableHeader>
+   782→      <TableBody>
+   783→        {recent.map((row) => (
+   784→          <TableRow key={row.date}>
+   785→            <TableCell className="pl-3 py-2 text-xs text-muted-foreground">
+   786→              <time dateTime={row.date}>
+   787→                {new Date(row.date).toLocaleDateString(locale, {
+   788→                  month: "short",
+   789→                  day: "numeric",
+   790→                })}
+   791→              </time>
+   792→            </TableCell>
+   793→            <TableCell className="py-2 text-right text-xs tabular-nums">{row.filed}</TableCell>
+   794→            <TableCell className="pr-3 py-2 text-right text-xs tabular-nums">{row.resolved}</TableCell>
+   795→          </TableRow>
+   796→        ))}
+   797→      </TableBody>
+   798→    </Table>
+   799→  );
+   800→}
+   801→
+   802→function StatusTable({
+   803→  data,
+   804→  t,
+   805→}: {
+   806→  data: AnalyticsSummary["by_status"];
+   807→  t: TFunc;
+   808→}) {
+   809→  return (
+   810→    <Table>
+   811→      <TableCaption className="sr-only">{t("admin.byStatus")}</TableCaption>
+   812→      <TableHeader>
+   813→        <TableRow className="bg-muted/40">
+   814→          <TableHead className="pl-3">{t("officer.colStatus")}</TableHead>
+   815→          <TableHead className="pr-3 text-right">{t("common.all")}</TableHead>
+   816→        </TableRow>
+   817→      </TableHeader>
+   818→      <TableBody>
+   819→        {data.map((row) => (
+   820→          <TableRow key={row.status}>
+   821→            <TableCell className="pl-3 py-2 text-xs">
+   822→              <span className="inline-flex items-center gap-1.5">
+   823→                <span
+   824→                  className="size-2 rounded-full"
+   825→                  style={{ backgroundColor: STATUS_COLORS[row.status] }}
+   826→                  aria-hidden
+   827→                />
+   828→                {t(`status.${row.status}`)}
+   829→              </span>
+   830→            </TableCell>
+   831→            <TableCell className="pr-3 py-2 text-right text-xs tabular-nums">{row.count}</TableCell>
+   832→          </TableRow>
+   833→        ))}
+   834→      </TableBody>
+   835→    </Table>
+   836→  );
+   837→}
+   838→
+   839→function PriorityTable({
+   840→  data,
+   841→  t,
+   842→}: {
+   843→  data: AnalyticsSummary["by_priority"];
+   844→  t: TFunc;
+   845→}) {
+   846→  return (
+   847→    <Table>
+   848→      <TableCaption className="sr-only">{t("admin.byPriority")}</TableCaption>
+   849→      <TableHeader>
+   850→        <TableRow className="bg-muted/40">
+   851→          <TableHead className="pl-3">{t("officer.colPriority")}</TableHead>
+   852→          <TableHead className="pr-3 text-right">{t("common.all")}</TableHead>
+   853→        </TableRow>
+   854→      </TableHeader>
+   855→      <TableBody>
+   856→        {data.map((row) => (
+   857→          <TableRow key={row.priority}>
+   858→            <TableCell className="pl-3 py-2 text-xs">
+   859→              <span className="inline-flex items-center gap-1.5">
+   860→                <span
+   861→                  className="size-2 rounded-full"
+   862→                  style={{ backgroundColor: PRIORITY_COLORS[row.priority] }}
+   863→                  aria-hidden
+   864→                />
+   865→                {t(`priority.${row.priority}`)}
+   866→              </span>
+   867→            </TableCell>
+   868→            <TableCell className="pr-3 py-2 text-right text-xs tabular-nums">{row.count}</TableCell>
+   869→          </TableRow>
+   870→        ))}
+   871→      </TableBody>
+   872→    </Table>
+   873→  );
+   874→}
+   875→
+   876→function DepartmentTable({
+   877→  data,
+   878→  t,
+   879→}: {
+   880→  data: AnalyticsSummary["by_department"];
+   881→  t: TFunc;
+   882→}) {
+   883→  return (
+   884→    <Table>
+   885→      <TableCaption className="sr-only">{t("admin.byDepartment")}</TableCaption>
+   886→      <TableHeader>
+   887→        <TableRow className="bg-muted/40">
+   888→          <TableHead className="pl-3">{t("admin.colDepartment")}</TableHead>
+   889→          <TableHead className="text-right">{t("admin.openComplaints")}</TableHead>
+   890→          <TableHead className="text-right">{t("admin.resolvedComplaints")}</TableHead>
+   891→          <TableHead className="pr-3 text-right">{t("admin.slaCompliance")}</TableHead>
+   892→        </TableRow>
+   893→      </TableHeader>
+   894→      <TableBody>
+   895→        {data.map((row) => (
+   896→          <TableRow key={row.department_id}>
+   897→            <TableCell className="pl-3 py-2 text-xs font-medium text-foreground/80">
+   898→              {row.department_name}
+   899→            </TableCell>
+   900→            <TableCell className="py-2 text-right text-xs tabular-nums">{row.open}</TableCell>
+   901→            <TableCell className="py-2 text-right text-xs tabular-nums">{row.resolved}</TableCell>
+   902→            <TableCell className="pr-3 py-2 text-right text-xs tabular-nums">
+   903→              {Math.round(row.sla_compliance_pct)}%
+   904→            </TableCell>
+   905→          </TableRow>
+   906→        ))}
+   907→      </TableBody>
+   908→    </Table>
+   909→  );
+   910→}
+   911→
+   912→// ---------------------------------------------------------------------------
+   913→// Skeleton
+   914→// ---------------------------------------------------------------------------
+   915→function AnalyticsSkeleton() {
+   916→  return (
+   917→    <div className="space-y-5">
+   918→      <div className="flex items-end justify-between gap-2">
+   919→        <div className="space-y-2">
+   920→          <Skeleton className="h-6 w-40" />
+   921→          <Skeleton className="h-4 w-72" />
+   922→        </div>
+   923→        <Skeleton className="h-4 w-32" />
+   924→      </div>
+   925→      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   926→        {Array.from({ length: 4 }).map((_, i) => (
+   927→          <Card key={i} className="py-4">
+   928→            <CardContent className="space-y-3">
+   929→              <Skeleton className="size-8 rounded-lg" />
+   930→              <Skeleton className="h-7 w-16" />
+   931→              <Skeleton className="h-3 w-24" />
+   932→              <Skeleton className="h-10 w-full" />
+   933→            </CardContent>
+   934→          </Card>
+   935→        ))}
+   936→      </div>
+   937→      <Card className="py-5">
+   938→        <CardContent className="space-y-3">
+   939→          <Skeleton className="h-5 w-32" />
+   940→          <Skeleton className="h-2 w-full rounded-full" />
+   941→        </CardContent>
+   942→      </Card>
+   943→      <Card className="py-5">
+   944→        <CardContent>
+   945→          <Skeleton className="h-[280px] w-full rounded-lg" />
+   946→        </CardContent>
+   947→      </Card>
+   948→      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+   949→        {Array.from({ length: 2 }).map((_, i) => (
+   950→          <Card key={i} className="py-5">
+   951→            <CardContent>
+   952→              <Skeleton className="h-[280px] w-full rounded-lg" />
+   953→            </CardContent>
+   954→          </Card>
+   955→        ))}
+   956→      </div>
+   957→    </div>
+   958→  );
+   959→}
+   960→
