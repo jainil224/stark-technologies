@@ -70,11 +70,17 @@ export function LoginForm() {
   return (
     <Card className="w-full border-border/70 shadow-xl shadow-primary/5">
       <CardHeader className="space-y-1.5">
-        <div className="flex items-center gap-2">
-          <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Sparkles className="size-4" aria-hidden />
-          </span>
-          <CardTitle className="text-xl">{t("auth.loginTitle")}</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Sparkles className="size-4" aria-hidden />
+            </span>
+            <CardTitle className="text-xl">{t("auth.loginTitle")}</CardTitle>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => navigate("landing")}> 
+            <ArrowLeft className="size-4" aria-hidden />
+            {t("nav.back")}
+          </Button>
         </div>
         <CardDescription>{t("auth.loginSubtitle")}</CardDescription>
       </CardHeader>
