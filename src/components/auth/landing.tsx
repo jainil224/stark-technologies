@@ -283,8 +283,8 @@ export function LandingPage() {
           </div>
           <div className="relative mt-10 grid grid-cols-1 gap-4 sm:grid-cols-3">
             {[
-              { role: t("landing.demoCitizen"), email: "priya@example.com", icon: Users, tint: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40" },
-              { role: t("landing.demoOfficer"), email: "karan.officer@example.com", icon: ShieldCheck, tint: "text-amber-600", bg: "bg-amber-50 dark:bg-amber-950/40" },
+              { role: t("landing.demoCitizen"), email: "sahil@example.com", icon: Users, tint: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40" },
+              { role: t("landing.demoOfficer"), email: "jainil.officer@example.com", icon: ShieldCheck, tint: "text-amber-600", bg: "bg-amber-50 dark:bg-amber-950/40" },
               { role: t("landing.demoAdmin"), email: "daksh.admin@example.com", icon: Building2, tint: "text-violet-600", bg: "bg-violet-50 dark:bg-violet-950/40" },
             ].map((d, i) => (
               <motion.button

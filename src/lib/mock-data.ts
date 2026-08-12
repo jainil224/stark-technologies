@@ -94,8 +94,8 @@ export const mockDepartments: Department[] = [
 export const mockUsers: User[] = [
   {
     id: "user_citizen_1",
-    name: "Priya Sharma",
-    email: "priya@example.com",
+    name: "Sahil Sharma",
+    email: "sahil@example.com",
     role: "citizen",
     phone: "+91 98765 43210",
     preferred_language: "en",
@@ -114,8 +114,8 @@ export const mockUsers: User[] = [
   },
   {
     id: "user_officer_1",
-    name: "Karan Patel",
-    email: "karan.officer@example.com",
+    name: "Jainil Patel",
+    email: "jainil.officer@example.com",
     role: "officer",
     preferred_language: "en",
     department_id: "dept_pwk",

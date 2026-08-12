@@ -43,8 +43,8 @@ export function LoginForm() {
   });
 
   const demoAccounts = [
-    { label: "Citizen — Priya", email: "priya@example.com" },
-    { label: "Officer — Karan (PWD)", email: "karan.officer@example.com" },
+    { label: "Citizen — Sahil", email: "sahil@example.com" },
+    { label: "Officer — Jainil (PWD)", email: "jainil.officer@example.com" },
     { label: "Officer — Lakshmi (Water)", email: "lakshmi.officer@example.com" },
     { label: "Admin — Daksh", email: "daksh.admin@example.com" },
   ];
