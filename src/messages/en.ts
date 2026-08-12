@@ -142,6 +142,8 @@ export const en = {
     attachmentsDrop: "Drag & drop files here, or click to browse",
     locationLabel: "Location",
     locationHint: "Sharing your location helps officers find the issue faster. This is optional.",
+    locationManualLabel: "Type location manually",
+    locationManualPlaceholder: "Street, neighborhood, city",
     locationCapture: "Capture my location",
     locationCaptured: "Location captured",
     locationCapturing: "Getting location…",

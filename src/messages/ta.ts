@@ -138,6 +138,8 @@ export const ta = {
     attachmentsDrop: "கோப்புகளை இங்கே இழுக்கவும், அல்லது உலாவ சொடுக்கு செய்யவும்",
     locationLabel: "இடம்",
     locationHint: "உங்கள் இடத்தைப் பகிர அதிகாரிகளுக்கு சிக்கலைக் கண்டுபிடிக்க உதவும். இது விருப்பத்தேர்வு.",
+    locationManualLabel: "இடம் கையேட்டில் பதிவு செய்யவும்",
+    locationManualPlaceholder: "தெரு, பகுதி, நகரம்",
     locationCapture: "எனது இடத்தைப் பிடி",
     locationCaptured: "இடம் பிடிக்கப்பட்டது",
     locationCapturing: "இடம் பெறப்படுகிறது…",

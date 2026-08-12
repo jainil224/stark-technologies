@@ -138,6 +138,8 @@ export const mr = {
     attachmentsDrop: "फाइल येथे खेचा, किंवा ब्राउझ करण्यासाठी क्लिक करा",
     locationLabel: "स्थान",
     locationHint: "तुमचे स्थान शेअर केल्याने अधिकाऱ्यांना समस्या शोधण्यास मदत होते. हे पर्यायी आहे.",
+    locationManualLabel: "स्थान हस्तनिर्मित टाइप करा",
+    locationManualPlaceholder: "रस्ता, परिसर, शहर",
     locationCapture: "माझे स्थान कॅप्चर करा",
     locationCaptured: "स्थान मिळाले",
     locationCapturing: "स्थान मिळत आहे…",

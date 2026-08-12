@@ -138,6 +138,8 @@ export const hi = {
     attachmentsDrop: "फ़ाइलें यहाँ खींचें, या ब्राउज़ करने के लिए क्लिक करें",
     locationLabel: "स्थान",
     locationHint: "अपना स्थान साझा करने से अधिकारियों को समस्या ढूँढने में मदद मिलती है। यह वैकल्पिक है।",
+    locationManualLabel: "स्थान मैन्युअल रूप से दर्ज करें",
+    locationManualPlaceholder: "सड़क, मोहल्ला, शहर",
     locationCapture: "मेरा स्थान पकड़ें",
     locationCaptured: "स्थान प्राप्त हुआ",
     locationCapturing: "स्थान प्राप्त हो रहा है…",

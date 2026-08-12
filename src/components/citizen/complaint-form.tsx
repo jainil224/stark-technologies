@@ -85,6 +85,7 @@ type LocationState =
   | { kind: "idle" }
   | { kind: "capturing" }
   | { kind: "captured"; lat: number; lng: number; address: string }
+  | { kind: "manual"; address: string }
   | { kind: "denied" };
 
 type VoiceStage = "prompt" | "review" | "confirmed";
@@ -148,7 +149,7 @@ export default function ComplaintForm() {
         })),
         location_lat: location.kind === "captured" ? location.lat : undefined,
         location_lng: location.kind === "captured" ? location.lng : undefined,
-        location_address: location.kind === "captured" ? location.address : undefined,
+        location_address: location.kind === "captured" || location.kind === "manual" ? location.address : undefined,
       });
       if (error || !data) throw error ?? new Error("Submission failed");
       return data;
@@ -626,34 +627,25 @@ export default function ComplaintForm() {
                 <span className="text-[11px] font-normal text-muted-foreground">({t("common.optional")})</span>
               </div>
               <p className="text-xs text-muted-foreground">{t("complaint.locationHint")}</p>
-              <div className="flex flex-wrap items-center gap-3 pt-1">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={captureLocation}
-                  disabled={location.kind === "capturing"}
-                  className="gap-1.5"
-                >
-                  {location.kind === "capturing" ? (
-                    <Loader2 className="size-4 animate-spin" aria-hidden />
-                  ) : (
-                    <MapPin className="size-4" aria-hidden />
-                  )}
-                  {location.kind === "capturing"
-                    ? t("complaint.locationCapturing")
-                    : location.kind === "captured"
-                      ? t("complaint.locationCapture")
-                      : t("complaint.locationCapture")}
-                </Button>
-                {location.kind === "captured" ? (
-                  <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
-                    <CheckCircle2 className="size-3.5" aria-hidden />
-                    {t("complaint.locationCaptured")}: {location.address}
-                  </div>
-                ) : location.kind === "denied" ? (
-                  <p className="text-xs text-destructive">{t("complaint.locationDenied")}</p>
-                ) : null}
+              <div className="space-y-3 pt-3">
+                <Label htmlFor="manual-location" className="text-sm font-medium">
+                  {t("complaint.locationManualLabel") ?? "Type your location manually"}
+                </Label>
+                <Input
+                  id="manual-location"
+                  value={location.kind === "manual" ? location.address : ""}
+                  onChange={(e) =>
+                    setLocation(
+                      e.target.value
+                        ? { kind: "manual", address: e.target.value }
+                        : { kind: "idle" }
+                    )
+                  }
+                  placeholder={t("complaint.locationManualPlaceholder") ?? "Street, neighborhood, city"}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("complaint.locationHint")} You can also type a location manually.
+                </p>
               </div>
             </div>
 
